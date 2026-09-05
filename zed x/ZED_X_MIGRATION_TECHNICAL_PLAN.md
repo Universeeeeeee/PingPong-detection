@@ -1,7 +1,7 @@
 # ZED X 乒乓球视觉迁移技术方案
 
 版本日期：2026-09-05  
-文档状态：硬件到货前设计稿  
+文档状态：最终软件架构已复核，硬件到货前设计稿  
 源系统：`d455_handoff`（Intel RealSense D455）  
 目标相机：Stereolabs ZED X（具体镜头、采集主机与软件版本待定）
 
@@ -27,6 +27,10 @@
 ## 2. 结论摘要
 
 迁移是可行的，但不是直接替换 Python import。
+
+最终软件架构采用“两层统一”：第一层只把各相机 SDK 数据转换为少量、按算法语义定义的 typed frame；D455 与 ZED X 各自保留最适合自身成像方式的 frontend。两个 frontend 在输出 `BallMeasurement3D` 后才进入共同的门控、滤波、预测、坐标转换与 ZMQ 接口。禁止把 ZED 形状的大一统 `CameraFrameBundle` 强加给 D455，也不把 D455 的异步 RGB/IR 逻辑复制到 ZED X。
+
+ZED X 的高速球主路径暂定为“同步全局快门彩色双目 + 高频二维检测 + rectified stereo matching/三角化”；ZED Neural Depth 是较低频的辅助证据、球桌/背景几何工具和基准对照，不预设它能随 SVGA 120 Hz 图像逐帧输出。最终速率必须在目标 Jetson/ZED Box 上实测。
 
 可基本保留的部分：
 
@@ -153,6 +157,8 @@ ZED X 序列号与镜头配置
 
 ## 5. 推荐系统架构
 
+本节的“Jetson 本地”与“RTX PC 网络接收”是部署拓扑候选，不改变第 7 节的软件边界。无论运行在哪台机器上，都使用 `ZedXSource → ZedXBallFrontend → BallMeasurement3D → shared core`。网络模式主要用于开发调试和算力对照；最终低延迟候选优先在采集端完成高频 stereo frontend，只发送低带宽测量。
+
 ### 5.1 开发阶段候选：具备硬件编码能力的 Jetson/ZED Box 采集，RTX PC 处理
 
 ```text
@@ -171,6 +177,7 @@ x86_64 RTX Linux PC
   ├─ ZED SDK Receiver
   ├─ ZED 相机适配层
   ├─ 球桌与乒乓球算法
+  ├─ 可选在接收端重新计算 ZED depth
   ├─ 回放与指标统计
   └─ ZMQ / ROS 2 适配输出
 ```
@@ -179,8 +186,9 @@ x86_64 RTX Linux PC
 
 - 最大化复用当前 PC 的 Python 环境和调试工具。
 - 大模型或额外实验可以使用 RTX GPU。
-- Jetson 只负责可靠采集、编码和可选深度计算。
+- Jetson 可只负责可靠采集、SVO2 本地记录和硬件编码，减少与感知算法的资源竞争。
 - 可在 PC 上将网络流作为普通 ZED SDK 输入。
+- Local Streaming 发送左右 side-by-side 视频；需要 depth 时由接收端 SDK 根据解码后的 stereo pair 重新计算，而不是把 Jetson 上已算出的 depth map 当作流内容透传。
 
 成立条件：
 
@@ -196,6 +204,8 @@ x86_64 RTX Linux PC
 - 视频压缩可能影响小球纹理与左右匹配。
 - Wi-Fi 抖动不适合作为最终低延迟链路。
 - Jetson 和 PC 必须安装兼容的 ZED SDK。
+- Local Streaming 传输的是经 H.264/H.265 编码的左右 side-by-side 视频，不是无损 raw stereo；网络结果不能替代本地 lossless SVO2 的 NCC/亚像素基准。
+- 高频 IMU、VIO 等能力还取决于 Streaming 版本与收发端 SDK；不能把“接收端可运行 SDK 模块”扩大解释为采集端所有原始传感器数据都无条件、全频率透传。
 
 ### 5.2 最终部署候选：Jetson 侧完成感知
 
@@ -238,90 +248,180 @@ ZED X → Jetson/ZED Box → 球/球桌检测 → 低带宽坐标消息 → 机�
 | `rs.pipeline` | `sl.Camera` | 替换 |
 | `wait_for_frames()` | `Camera.grab()` | 替换 |
 | RGB frame | `retrieve_image(VIEW.LEFT)` 得到 BGRA，再显式转 BGR | 替换接口，保留图像算法 |
-| IR left/right | 同一 grab 的 `VIEW.LEFT/RIGHT` BGRA 图显式转灰度 | 数据语义改变 |
+| IR left/right | 同一图像事件的 `VIEW.LEFT_GRAY/RIGHT_GRAY` | 数据语义改变 |
 | `rs.align(color)` | ZED 注册到左图的 depth/XYZ | 删除或替换 |
 | RealSense intrinsics/extrinsics | ZED calibration parameters | 替换 |
 | `rs2_project_point_to_pixel` | 通用针孔投影或 ZED 标定 API | 替换 |
 | `rs2_deproject_pixel_to_point` | ZED `DEPTH/XYZ` 或通用反投影 | 替换 |
-| D455 自定义 `capture.db3` | ZED SVO2 + sidecar metadata | 替换 |
-| D455 重放适配器 | SVO2 reader / 统一 FrameBundle reader | 替换 |
+| D455 自定义 `capture.db3` | 指定压缩模式的 ZED SVO2 + sidecar metadata | 替换 |
+| D455 重放适配器 | SVO2 reader / typed-frame reader | 替换 |
 | RGB `ImageBallDetector` | 左目 RGB `ImageBallDetector` | 大部分保留并重标 |
 | IR NCC/三角化 | 同步左右彩色图转灰度后 NCC/三角化 | 思路保留，参数重标 |
-| `BallTrackGate` | 同一状态机 | 保留 |
-| `TimestampedBallFilter` | 同一时间戳滤波器 | 保留 |
+| 三维候选 | `BallMeasurement3D` | 新增正式的相机无关边界 |
+| `BallTrackGate` | 同一门控逻辑 | 逻辑保留；将 `rgb_match_seconds` 等 D455 命名改为通用身份时效语义 |
+| `TimestampedBallFilter` | 同一时间戳滤波器 | 数学逻辑保留；将按 `rgb`/`ir` 字符串判断相关性的代码改为显式 `correlation_group` |
 | ZMQ payload | 保持字段语义并扩展 metadata | 保留 |
 
 ## 7. 建议的软件边界
 
-不要在主循环中到处直接调用 `pyzed.sl`。应把相机相关逻辑收敛到单一后端，使检测器只消费普通 NumPy 数据和显式标定结构。
+不要在主循环中到处直接调用 `pyzed.sl`。相机 SDK 调用收敛在 source/backend 中，但“隐藏 SDK”不是唯一边界：D455 与 ZED X 的成像拓扑不同，球检测 frontend 也应分开。真正稳定的公共边界是已经完成身份、几何与来源描述的三维球测量。
 
-### 7.1 统一帧对象
+### 7.1 最终分层与统一边界
 
-建议定义逻辑上的 `CameraFrameBundle`：
+```text
+                         CAMERA SOURCE
+─────────────────────────────────────────────────────────
+ D455Source                                  ZedXSource
+ RGB≈30 Hz + aligned depth                   LEFT color
+ LEFT/RIGHT IR≈90 Hz                         LEFT/RIGHT gray
+ 异步 typed events                           可选低频 depth/confidence
+        │                                           │
+        ▼                                           ▼
+ DetectionFrame / StereoFrame / DepthFrame / RigCalibration
+        │                                           │
+        ▼                                           ▼
+ D455BallFrontend                           ZedXBallFrontend
+ RGB 身份 + RGB→IR + IR 检测                LEFT 颜色身份
+ 异步关联 + IR stereo                       rectified stereo matching
+ aligned depth 辅助                          SDK depth 辅助
+        │                                           │
+        └──────────────────┬────────────────────────┘
+                           ▼
+                   BallMeasurement3D
+───────────────────────────┼───────────────────────────────
+                从这里开始使用共同核心
+                           ▼
+                     BallTrackGate
+                           ▼
+                TimestampedBallFilter
+                           ▼
+                  prediction / table frame
+                           ▼
+                     ZMQ observation
+```
+
+设计含义：
+
+- `ZedXSource` 负责如何取得和标准化 ZED 数据；`ZedXBallFrontend` 负责如何从这些数据得到可信三维球测量。
+- `D455BallFrontend` 保留 IR 帧差、局部对比度、RGB→IR 投影和异步关联，不为了表面统一而改造成 ZED frontend。
+- `ImageBallDetector` 可以由两个 frontend 共用，因为它的真实接口已经是普通 BGR 图和时间戳。
+- `CameraFrameBundle` 如有需要只能作为 `ZedXSource` 的内部、单次采集快照，不作为 D455/ZED X 的公共算法接口。
+- 当前 `BallTrackGate` 与 `TimestampedBallFilter` 的数学逻辑可复用，但代码仍有 `rgb_match_seconds`、`source.startswith('rgb'/'ir')` 等 D455 语义。实现公共边界时只做定向解耦，并用 D455 回放做前后回归，不能直接宣称现有代码已经完全相机无关。
+
+### 7.2 按算法语义拆分 typed frame
+
+建议的最小公共数据类型如下；它们是独立事件，不要求每个时刻组成一个所有字段都存在的大 bundle：
 
 ```python
-CameraFrameBundle:
-    source: "zed_x"
-    serial_number: str
-    sequence_id: int
+DetectionFrame:
+    image_bgr: np.ndarray
     sdk_image_timestamp_ns: int
-    processing_host_arrival_monotonic_ns: int
-    timestamp_origin: str
-    left_bgr: np.ndarray
-    right_bgr: np.ndarray
-    depth_m: Optional[np.ndarray]
-    xyz_m: Optional[np.ndarray]
-    depth_confidence: Optional[np.ndarray]
-    imu: Optional[dict]
-    calibration: CameraCalibration
+    frame_number: int
+    intrinsics: CameraIntrinsics
+    camera_frame_id: str
+
+StereoFrame:
+    left_gray: np.ndarray
+    right_gray: np.ndarray
+    sdk_image_timestamp_ns: int
+    frame_number: int
+    calibration: StereoCalibration
+
+DepthFrame:
+    depth_m: np.ndarray
+    confidence: Optional[np.ndarray]
+    sdk_image_timestamp_ns: int
+    frame_number: int
+    intrinsics: CameraIntrinsics
+    aligned_to_frame_id: str
+```
+
+ZED X 第一版映射：
+
+```text
+VIEW.LEFT (BGRA) → 显式 BGRA→BGR → DetectionFrame
+VIEW.LEFT_GRAY + VIEW.RIGHT_GRAY → StereoFrame
+MEASURE.DEPTH + MEASURE.CONFIDENCE → DepthFrame（可选、允许低于图像频率）
 ```
 
 约束：
 
-- `left_bgr` 与 `right_bgr` 必须来自同一次同步 grab。
-- 标准 `VIEW.LEFT` / `VIEW.RIGHT` 返回 8-bit BGRA 四通道图；后端必须显式执行 BGRA→BGR，再填充 `left_bgr` / `right_bgr`，不能把 `get_data()` 直接标成 BGR。
-- 检测与滤波使用 `sdk_image_timestamp_ns` 表示帧的 SDK 时间参考，不能使用算法处理完成时间替代它。
-- `TIME_REFERENCE.IMAGE` 未被官方定义为曝光开始、曝光中点或曝光结束时间，字段名、日志和指标中禁止称其为“曝光时间”。
-- `processing_host_arrival_monotonic_ns` 只用于当前处理主机上的排队和处理耗时；不同主机、Epoch 与 monotonic 时钟不得直接相减。
-- `timestamp_origin` 必须记录 live/SVO/stream 以及时间戳来自采集端还是接收端；实体机上确认网络流是否保留发送端时间戳后再固定协议语义。
-- 深度单位在后端统一转换为米。
-- 无效深度使用显式 mask，不用零值冒充有效距离。
-- 序列号、分辨率、帧率和标定必须写入运行记录。
+- ZED 左右图必须来自同一次 `read()` 或 `grab()` 对应的同步 stereo pair；不得把不同 frame number 拼成 `StereoFrame`。
+- `VIEW.LEFT_GRAY/RIGHT_GRAY` 可直接用于 stereo matching，无需先取 BGRA 再经过 BGR 转灰度。
+- 标准 `VIEW.LEFT/RIGHT` 是 8-bit BGRA；只有完成显式转换后的数组才能命名为 `image_bgr`。
+- 深度单位在 source 中统一为米，无效深度使用显式 mask，不用零值冒充有效距离。
+- `TIME_REFERENCE.IMAGE` 是 SDK 图像时间参考而非物理曝光时刻；所有事件保留同一原始整数纳秒时间戳，进入现有滤波器时再确定性转换为秒。
+- 另外记录处理主机 monotonic 到达时间；跨主机时钟未经 PTP/Chrony 与来源验证不得直接相减。
 
-### 7.2 标定对象
+### 7.3 标定与 canonical camera frame
 
-建议使用 SDK 无关的标定结构：
+建议使用 SDK 无关、变换方向可读的结构：
 
 ```python
-CameraCalibration:
+CameraIntrinsics:
+    width: int
+    height: int
+    fx: float
+    fy: float
+    cx: float
+    cy: float
+    distortion: np.ndarray
+    distortion_model: str
+
+StereoCalibration:
+    left: CameraIntrinsics
+    right: CameraIntrinsics
+    T_right_from_left: np.ndarray
     image_geometry: "rectified" | "unrectified"
     calibration_variant: "calibration_parameters" | "calibration_parameters_raw"
-    left_K: np.ndarray          # 3x3
-    right_K: np.ndarray         # 3x3
-    left_distortion: np.ndarray
-    right_distortion: np.ndarray
-    T_left_right: np.ndarray    # 4x4，定义方向必须固定
-    image_width: int
-    image_height: int
-    coordinate_system: str
-    units: "meter"
+    calibration_id: str
+
+CameraRigCalibration:
+    reference_frame_id: str
+    detection_intrinsics: CameraIntrinsics
+    stereo: StereoCalibration
+    T_reference_from_detection: np.ndarray
 ```
+
+采用 `T_dst_from_src` 命名，固定公式为 `p_dst = T_dst_from_src @ p_src`，避免 `T_left_right` 的方向歧义。Canonical frame 定义为 frontend 输出 `position_camera_m` 所在的参考光学系：D455 当前是左 IR optical frame；ZED X 是 rectified left optical frame。ZED X 中 detection 与 reference 都是左目，因此 `T_reference_from_detection` 为单位变换。
 
 必须强制以下配对：
 
 ```text
-VIEW.LEFT / VIEW.RIGHT
+VIEW.LEFT / VIEW.RIGHT / VIEW.LEFT_GRAY / VIEW.RIGHT_GRAY
     ↔ camera_configuration.calibration_parameters
 
 VIEW.LEFT_UNRECTIFIED / VIEW.RIGHT_UNRECTIFIED
     ↔ camera_configuration.calibration_parameters_raw
 ```
 
-前者描述已校正图像，通常是零畸变的 PINHOLE 模型；后者描述真实镜头并保留原始畸变。禁止对 `VIEW.LEFT/RIGHT` 再套用 raw distortion，也禁止使用 rectified 参数解释 unrectified 图像。后端初始化时应断言图像视图、标定变体、分辨率和 calibration ID 一致。
+前者描述已校正图像，通常是零畸变的 PINHOLE 模型；后者描述真实镜头并保留原始畸变。第一版只允许 rectified 路径。禁止对 rectified 图像再套 raw distortion，也禁止使用 rectified 参数解释 unrectified 图像。source 初始化时断言视图、标定变体、分辨率、frame ID 和 calibration ID 一致。
 
-禁止把 D455 的 `rs.intrinsics` 或 ZED SDK 对象继续传入球桌和球检测模块。这样可以逐步移除算法层对相机厂商 SDK 的依赖。
+### 7.4 真正的公共接口：`BallMeasurement3D`
 
-### 7.3 建议目录结构
+```python
+BallMeasurement3D:
+    timestamp_s: float
+    position_camera_m: np.ndarray       # shape (3,)
+    covariance_m2: np.ndarray           # shape (3,3)
+    confidence: float
+    source: str
+    observation_id: tuple
+    correlation_group: tuple
+    identity_timestamp_s: Optional[float]
+    camera_frame_id: str
+    calibration_id: str
+```
+
+- `observation_id` 用于拒绝重复消费同一测量。
+- `correlation_group` 显式表示来自同一 stereo pair 的 NCC、SDK depth 等相关证据，滤波器不得按来源字符串猜测独立性或重复计数。
+- `identity_timestamp_s` 取代共享层的 RGB 专用命名，表示最近一次独立颜色/外观身份确认时间。
+- `covariance_m2` 必须由各 frontend 根据自身几何和实验误差给出；不能把 D455 的焦距、基线和噪声地板用于 ZED X。
+- `camera_frame_id` 与 `calibration_id` 是下游接纳测量的硬门禁。
+
+`BallTrackGate`、`TimestampedBallFilter`、预测和坐标转换只接收该类型或它的字段，不接触 `pyrealsense2`、`pyzed.sl`、BGRA、IR 图像或 raw depth scale。
+
+### 7.5 建议目录结构
 
 在保留现有 D455 快照的前提下，新实现可采用：
 
@@ -332,6 +432,7 @@ zed_x/
 ├── zed_record.py
 ├── zed_replay.py
 ├── camera_types.py
+├── zed_frontend.py
 ├── projection.py
 ├── zed_table_tennis_tracker.py
 ├── run_zed_x_tracker.sh
@@ -341,7 +442,7 @@ zed_x/
 原则：
 
 - 不重命名或覆盖当前 D455 文件。
-- 初期直接复用上级目录中的纯算法模块，避免复制后形成两个漂移版本。
+- 初期直接复用上级目录中已经 SDK 无关的算法模块；需要修改共享代码时另开变更并用 D455 回放做回归，不在 ZED 后端提交里顺手改动。
 - 当接口稳定后，再决定是否提取正式的 `camera_common` 包。
 - 不为尚未确认的多相机需求预先设计复杂插件系统。
 
@@ -359,7 +460,21 @@ zed_x/
 
 ZED X 是同步全局快门相机，理论上更适合高速运动目标，但实际运动模糊仍受曝光时间、增益、照明和球速影响。到货后需要以短曝光、高照度为起点做曝光扫描，而不是仅依靠全局快门名称判断图像足够清晰。
 
-### 8.2 三维路径 A：ZED SDK depth/XYZ
+### 8.2 主路径：同步左右图 stereo matching/三角化
+
+保留 `ball_epipolar.py` 的 NCC、亚像素定位和三角化思想，但不能直接复用其中的 RealSense 类型、RGB→IR 投影与 D455 标定约定：
+
+1. 左目 BGR 检测给出球中心、轮廓和搜索 ROI。
+2. 使用同一 frame number 的 `VIEW.LEFT_GRAY/RIGHT_GRAY`；配套使用 rectified `calibration_parameters`。
+3. 利用 rectified 极线约束在右图同一行附近搜索 NCC 峰值。
+4. 执行亚像素视差修正，并报告峰值强度、次峰比和左右一致性。
+5. 使用运行时 ZED 标定的焦距和 baseline 三角化，不能使用宣传页上的近似参数。
+6. 检查正视差、工作距离、重投影误差、物理球径、左右外观和运动创新。
+7. 输出 `BallMeasurement3D`，并将 observation ID 与 stereo frame number 绑定。
+
+ZED 左右图硬件同步后，不再需要 D455 的 RGB-to-IR 时间邻近拼接。SVGA 最高 120 FPS 是高速候选模式，但它只是相机采集上限；实际 `read()`、检测、匹配和发布频率必须在目标平台上验收。
+
+### 8.3 辅助路径：ZED SDK depth/XYZ
 
 处理流程：
 
@@ -380,20 +495,8 @@ ZED X 是同步全局快门相机，理论上更适合高速运动目标，但�
 - ZED SDK 深度置信图应作为证据之一，但不能作为球身份的唯一证据。
 - 深度模式的普通场景精度不代表小型高速球体精度。
 - 深度稳定化等时域处理可能增加延迟或污染高速前景，需要单独 A/B 测试。
-
-### 8.3 三维路径 B：同步左右图 NCC
-
-保留 `ball_epipolar.py` 的基本思想，但替换标定和数据输入：
-
-1. 左目 RGB 检测给出球中心和搜索 ROI。
-2. 使用 `VIEW.LEFT/RIGHT` 获取同一 grab 的左右校正 BGRA 图，显式转换为灰度；配套使用 `calibration_parameters`，不得使用 `calibration_parameters_raw`。
-3. 在右图极线附近搜索 NCC 峰值。
-4. 执行亚像素视差修正。
-5. 使用 ZED 标定的焦距和基线三角化。
-6. 检查重投影误差、左右外观、球体物理尺寸和匹配歧义。
-7. 与 SDK depth/XYZ 比较，但两者不一定是完全独立证据，因为都源于同一对图像。
-
-ZED 左右图硬件同步后，不再需要 D455 的 RGB-to-IR 时间邻近拼接。每个 stereo pair 只允许形成一次测量，仍保留重复帧与倒序时间戳拒绝。
+- SDK depth 与自定义 stereo 都来自同一左右图，属于相关证据；不得把两者当作两个独立观测送入滤波器。可以用于一致性检查，或从同一 `correlation_group` 中选择较可信的一项。
+- 该路径优先服务于球桌/背景几何、低频球深度辅助和算法对照，不作为 120 Hz 球三维输出的默认承诺。
 
 ### 8.4 三维融合原则
 
@@ -409,7 +512,22 @@ predicted_only
 
 `measured_this_frame=true` 只在本周期接纳了新 `sdk_image_timestamp_ns` 对应的三维观测时成立。预测、历史保持或重复读取同一帧不能将其设为 true。
 
-### 8.5 深度模式实验
+### 8.5 高频图像与低频 Neural Depth 的调度
+
+不能把 `camera_fps=120` 理解成 `NEURAL_* depth=120 Hz`。例如官方 ZED SDK v5.0.1 RC、ZED X Driver v1.3.0 的 Orin AGX 单相机参考表中，NEURAL/NEURAL_LIGHT 为 30 FPS，NEURAL_PLUS 为 29 FPS 且 GPU 占用明显更高；这不是本项目目标硬件的保证值，实际数字还会随平台、分辨率、功耗模式、SDK/驱动和其他负载变化。
+
+首选调度是官方 Split Process 模式：
+
+```text
+每个新图像：read() → LEFT color + LEFT/RIGHT gray → 2D + stereo
+每 N 帧：   grab() → DEPTH/CONFIDENCE → 辅助验证或球桌更新
+```
+
+`read()` 只取新图像而不重新计算深度，`grab()` 在选定帧执行深度计算。当前官方示例为 C++；若目标 ZED SDK 的 Python binding 没有等价、经过验证的 `read()` 路径，应将采集 backend 写成小型 C++ 进程/扩展，或降低整体采集频率，不能用两个进程同时抢占同一相机来规避。
+
+验收至少记录：image FPS、stereo 3D FPS、depth FPS、每类测量 age、GPU/CPU、丢帧和 P95/P99 延迟。若 split-process 在目标版本不可用或不稳定，退化方案是 `DEPTH_MODE.NONE` 的高频主进程，并把 Neural Depth 仅用于独立回放/基准实验。
+
+### 8.6 深度模式实验
 
 硬件到货后的初始候选：
 
@@ -493,8 +611,8 @@ coordinate_system = IMAGE
 
 ### 11.1 时间戳要求
 
-- 左右图使用同一 grab 对应的图像时间戳。
-- IMU 如需融合，读取与当前图像同步的传感器数据。
+- 左右图使用同一 `read()`/`grab()` 图像事件对应的 frame number 和图像时间戳。
+- IMU 如需融合，先验证 live、SVO2 与 Local Streaming 三种输入下的 stream/SVO 版本和传感器频率；每帧同步值可使用 `TIME_REFERENCE.IMAGE`，但不能默认网络接收端天然拥有采集端完整高频 IMU 序列。
 - 所有滤波更新使用 `TIME_REFERENCE.IMAGE` 对应的 SDK 图像时间戳，不使用 Python `time.time()` 或算法完成时间替代帧时间。
 - ZED 官方将其描述为 SDK 图像时间参考，并说明进入主机的数据包在主机接收时打时间戳；它不是经过定义的曝光开始/中点/结束时间。
 - 额外使用 monotonic clock 记录当前主机的接收、处理开始、处理完成和发布时间。
@@ -531,15 +649,25 @@ sequence_gap
 
 ## 12. 录制与回放方案
 
-### 12.1 原始格式
+### 12.1 基准记录格式与压缩分级
 
-ZED X 的原始实验记录建议使用 SVO2，因为它能保存同步左右视频、时间戳和相机传感器数据，并允许回放时重新选择深度配置。
+ZED X 的主要实验记录建议使用 SVO2，因为它能保存同步左右视频、时间戳和高频传感器数据，并允许回放时重新选择深度配置。但“SVO2”是容器/记录格式，不等于无损或 raw；实际图像质量由 `SVO_COMPRESSION_MODE` 决定。
+
+分两类记录：
+
+| 用途 | 压缩要求 | 说明 |
+|---|---|---|
+| golden benchmark | `LOSSLESS (PNG/ZSTD)`，或经逐像素验证的 H.264/H.265 lossless | 用于 HSV、球边缘、NCC、亚像素视差和 depth 对照；不得使用默认 lossy 文件冒充无损基准 |
+| 长时工程记录 | H.265/H.264 lossy 或已验证可承受的 lossless 模式 | 用于稳定性、流程和故障复现；单独报告压缩伪影影响 |
+
+官方文档给出的 ROS 2/SVO 默认配置可能是 H.265 lossy，因此录制程序必须显式设置模式并在日志中确认最终生效。开始正式数据采集前，分别验证目标分辨率/帧率下的写盘吞吐、掉帧、CPU/GPU、文件增长速度和异常关闭后的可回放性。
 
 每次录制同时生成 sidecar `run.json`，记录：
 
 - 相机序列号。
 - ZED SDK、ZED Link、JetPack/L4T 版本。
 - 分辨率、帧率、曝光、增益和白平衡。
+- SVO2 compression mode、是否 lossless、实测平均码率和丢帧计数。
 - 深度模式和范围。
 - 是否启用深度稳定化、positional tracking 和 IMU。
 - SVO2 文件 SHA256。
@@ -548,7 +676,7 @@ ZED X 的原始实验记录建议使用 SVO2，因为它能保存同步左右视
 
 ### 12.2 ROS bag 使用边界
 
-- 只验证相机算法时，以 SVO2 为主。
+- 只验证相机算法时，以明确压缩模式的 SVO2 为主；几何/匹配 golden benchmark 必须优先使用 lossless。
 - 需要同步机器人 joint state、policy 状态、控制命令或动捕时，使用 ROS bag/MCAP 记录完整系统。
 - 不要只保存标注 MP4；压缩视频不足以恢复原始左右图、标定、深度和传感器时间信息。
 
@@ -569,7 +697,7 @@ recordings/<session>/
     └── confidence/
 ```
 
-缓存是可再生数据，不作为唯一原始记录。评分程序应能直接消费 SVO2 或确定性导出的缓存。
+缓存是可再生数据，不作为唯一权威记录。评分程序应能直接消费 SVO2 或确定性导出的缓存，并把压缩模式纳入数据集 ID。
 
 ## 13. 硬件到货前可完成的工作
 
@@ -582,11 +710,13 @@ recordings/<session>/
 
 ### 阶段 B：提取 SDK 无关算法
 
-1. 定义 `CameraFrameBundle` 和 `CameraCalibration`。
-2. 将投影、反投影和刚体变换从 `pyrealsense2` 对象改为 NumPy 数据。
-3. 让 `ball_image.py`、`ball_validation.py`、`ball_motion.py` 不导入相机 SDK。
-4. 为通用投影函数增加数值单元测试。
-5. 保持 D455 现有入口继续工作，不在同一次修改中删除 D455 后端。
+1. 先定义 `DetectionFrame`、`StereoFrame`、`DepthFrame`、`CameraRigCalibration` 和 `BallMeasurement3D`；不定义跨相机的大一统 `CameraFrameBundle`。
+2. 将投影、反投影和刚体变换从 `pyrealsense2` 对象改为 NumPy 数据，并采用 `T_dst_from_src` 命名。
+3. `ball_image.py` 保持 BGR 输入接口；不要把 ZED BGRA 转换塞入检测器。
+4. 将 `ball_validation.depth_evidence(depth, scale, ...)` 的传感器 scale 处理前移到 source，公共验证只消费米制 `depth_m`。
+5. 让 `BallTrackGate` 使用通用 identity freshness 语义，让 `TimestampedBallFilter` 使用显式 `correlation_group`，不按 `rgb`/`ir` 来源字符串猜测相关性。
+6. 为通用投影、标定配对、变换方向、重复 measurement ID 和 correlation group 增加单元测试。
+7. 保持 D455 现有入口继续工作；以同一 D455 回放的前后 JSONL 比较检测数、XYZ、时间戳、速度和 table pose，确认只是解耦而非改算法。
 
 ### 阶段 C：建立 ZED 后端骨架
 
@@ -594,8 +724,9 @@ recordings/<session>/
 
 - 参数解析。
 - `pyzed.sl` 延迟导入和清晰错误信息。
-- 统一标定结构转换。
-- 左右图、depth、XYZ 和 confidence 的接口形状。
+- typed frame 与 rectified 标定结构转换。
+- BGRA→BGR、直接 gray views、depth meter、confidence 的接口形状。
+- `ZedXBallFrontend` 到 `BallMeasurement3D` 的 mock 链路。
 - SVO2 路径输入。
 - 网络流地址输入。
 - 运行元数据和 ZMQ payload。
@@ -651,7 +782,7 @@ ZED Link 设备信息
 - 球员、球拍、橙色衣物和背景干扰。
 - 明暗不同的现场光照。
 
-每个场景先录制短样本，验证可完整回放后再录长样本。
+每个关键几何/匹配场景先录一份短 lossless golden sample，再按容量需要录长时工程样本。开始长录前验证 compression mode、实际写盘速率、帧序号连续性、传感器数据、完整回放和文件关闭行为。
 
 ### 阶段 3：二维迁移验收
 
@@ -662,11 +793,13 @@ ZED Link 设备信息
 
 ### 阶段 4：三维迁移验收
 
-1. 比较 `NEURAL_LIGHT`、`NEURAL` 和必要时 `NEURAL_PLUS`。
-2. 比较 SDK depth/XYZ 与左右 NCC。
-3. 标注或测量独立三维真值。
-4. 报告三维有效覆盖、错误更新、位置误差和延迟。
-5. 验证遮挡、出画、落台和高速拖影期间不会长时间输出虚假预测。
+1. 先验收 rectified 左右图 stereo matching/三角化主路径。
+2. 比较 `NEURAL_LIGHT`、`NEURAL` 和必要时 `NEURAL_PLUS` 的辅助 depth/XYZ。
+3. 比较“每帧 grab”与 `read()`/周期性 `grab()` split-process 的 image/depth 吞吐和延迟。
+4. 在同一 lossless SVO2 上比较 SDK depth/XYZ 与左右 stereo，并把同源结果放入同一 `correlation_group`。
+5. 标注或测量独立三维真值。
+6. 报告 image FPS、stereo 3D FPS、depth FPS、三维有效覆盖、错误更新、位置误差和延迟。
+7. 验证遮挡、出画、落台和高速拖影期间不会长时间输出虚假预测。
 
 ### 阶段 5：球桌与坐标验收
 
@@ -763,8 +896,9 @@ Jetson → 有线网络流 → RTX PC 感知
 ZED X 迁移不应让发球/接球 policy 直接依赖 `pyzed.sl`。推荐边界：
 
 ```text
-ZED X 后端
-  → 球/球桌感知
+ZedXSource
+  → ZedXBallFrontend / 球桌感知
+  → BallMeasurement3D
   → 标准化 Observation
   → 坐标与健康门控
   → Rally 状态机
@@ -775,7 +909,8 @@ ZED X 后端
 
 ```text
 observation_id
-sensor_timestamp_ns
+sdk_image_timestamp_ns
+timestamp_origin
 publish_timestamp_ns
 camera_frame_id
 calibration_id
@@ -852,6 +987,9 @@ policy 切换必须以状态、时间和有效性为条件，不能仅以“ZMQ 
 | 把任意 Jetson 都视为支持 SDK 网络流 | `enableStreaming()` 不可用或只能改走高负载软件编码 | 采购前核对 NVENC/NVDEC；Orin Nano 无 NVENC，单列验证或更换架构 |
 | 网络流压缩损伤小球细节 | 左右匹配与二维检测下降 | 有线网络、高质量码率、与 Jetson 本地结果对照 |
 | 网络流增加延迟和抖动 | policy 输入过旧 | 记录采集与到达时间，比较 P95/P99 |
+| 把 SVO2 等同于 raw/lossless | lossy 伪影污染 HSV、球边缘和 NCC 基准 | golden 数据显式使用 lossless，记录最终 compression mode |
+| 假设 SVGA 120 FPS 同时等于 Neural Depth 120 Hz | 实际 3D 频率和延迟严重不达标 | 高频 stereo 作为主路径；用 `read()`/周期性 `grab()` 解耦并实测三种频率 |
+| 用大一统 FrameBundle 强行覆盖 D455 与 ZED | 大量 Optional、旧帧复用和异步语义泄漏到公共层 | typed events + camera-specific frontend，在 `BallMeasurement3D` 后统一 |
 | ZED depth 对高速小球无有效值 | 三维覆盖不足 | 保留同步左右图 NCC 路径 |
 | 自动曝光导致球拖影或左右亮度变化 | 检测/匹配失败 | 固定曝光实验、高照度、记录实际参数 |
 | 直接沿用 D455 阈值 | 漏检或误检 | 重新标注和调参 |
@@ -877,7 +1015,7 @@ policy 切换必须以状态、时间和有效性为条件，不能仅以“ZMQ 
 - 平台版本盘点报告。
 - 经批准的安装变更单。
 - 官方相机连通与健康报告。
-- 原始 SVO2 基准数据集及 SHA256。
+- lossless SVO2 golden 基准数据集及 SHA256、compression mode 和掉帧报告。
 - ZED X 二维检测报告。
 - SDK depth 与 NCC 三维对照报告。
 - 球桌和 robot-base 标定文件。
@@ -908,6 +1046,9 @@ policy 切换必须以状态、时间和有效性为条件，不能仅以“ZMQ 
 17. [NVIDIA：Orin Nano 软件编码与无 NVENC 说明](https://docs.nvidia.com/jetson/archives/r35.6.0/DeveloperGuide/SD/Multimedia/SoftwareEncodeInOrinNano.html)
 18. [ZED SDK Linux 安装说明](https://docs.stereolabs.com/docs/development/zed-sdk/linux)
 19. [ZED SDK Docker 说明](https://docs.stereolabs.com/docs/development/zed-sdk/use-with-docker)
+20. [ZED SDK Split Process：`read()` 高频图像与周期性 `grab()` 深度](https://docs.stereolabs.com/docs/tutorials/split-process)
+21. [ZED ROS 2 频率调优与 SVGA 120 FPS 约束](https://docs.stereolabs.com/docs/integrations/ros-2/node-frequency-tuning)
+22. [ZED X 分辨率、帧率与运行时焦距说明](https://support.stereolabs.com/hc/en-us/articles/360007395634-What-is-the-camera-focal-length-and-field-of-view)
 
 ## 21. 下一步决策
 
@@ -916,7 +1057,7 @@ policy 切换必须以状态、时间和有效性为条件，不能仅以“ZMQ 
 1. 确定 ZED X 镜头版本、预期安装位置、球桌覆盖范围和工作距离。
 2. 确定 Jetson/ZED Box 与 ZED Link 采集卡型号。
 3. 确定 JetPack/L4T、ZED Link 驱动和 ZED SDK 的兼容组合。
-4. 决定第一版采用“Jetson 本地处理”还是“Jetson 采集、RTX PC 处理”。
-5. 在硬件到货前实现 SDK 无关接口和测试骨架。
+4. 实现 typed-frame、`BallMeasurement3D`、通用标定/投影和 mock stereo 测试；涉及现有 D455 文件的实际重构另开变更并先建立回归基线。
+5. 到货后分别验收 Jetson 本地和 RTX PC 网络模式，再决定最终部署位置。
 
-推荐默认方向是：先根据具体 Jetson/ZED Box 型号核对 NVENC/NVDEC 与官方兼容矩阵。具备硬件编码能力时，可在开发阶段通过千兆有线网络将 ZED SDK 流送到 RTX PC，先复用现有感知算法；若采用无 NVENC 的 Orin Nano，则优先评估 Jetson 本地感知，或把软件编码/ROS 2 传输作为独立方案验收。最终架构由同一数据集上的端到端延迟和三维正确性决定，而不是由“Jetson”这一名称预先假定。
+最终软件架构已经确定：`ZedXSource → ZedXBallFrontend → BallMeasurement3D → shared core`，高速 rectified stereo 是球三维主路径，Neural Depth 是低频辅助路径。尚未确定的是部署拓扑。先根据具体 Jetson/ZED Box 型号核对 NVENC/NVDEC 与官方兼容矩阵；具备硬件编码能力时，可在开发阶段通过千兆有线网络把 ZED SDK 流送到 RTX PC。若采用无 NVENC 的 Orin Nano，则优先评估 Jetson 本地感知，或把软件编码/ROS 2 传输作为独立方案验收。最终部署位置由同一 lossless 数据集上的端到端延迟、三维正确性、资源占用和稳定性决定。

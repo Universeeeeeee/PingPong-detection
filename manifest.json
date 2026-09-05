@@ -1,0 +1,187 @@
+{
+  "date": "2026-09-04",
+  "server": "/home/pc/rsy/predict_node",
+  "scope": "Source snapshot. Environments, recordings, third-party FFS code and weights are not bundled.",
+  "files": [
+    {
+      "file": "D455_HANDOFF_20260904.md",
+      "bytes": 19383,
+      "sha256": "454122d424f83d53019b9e49518f342b3a10af2bd299c2eb0aadf72378f44c5d"
+    },
+    {
+      "file": "IR_XYZ_FFS_STATUS.md",
+      "bytes": 6516,
+      "sha256": "147015624b8039aafc0f2929a4833e0e50c83f8a6d29ea02ce1a9c54ca16ac35"
+    },
+    {
+      "file": "ball_epipolar.py",
+      "bytes": 9384,
+      "sha256": "14f7e8d557211913a746289b2bc0addfbfede7982c4b39b62bdbd797c1d7c81d"
+    },
+    {
+      "file": "ball_foundation.py",
+      "bytes": 4388,
+      "sha256": "4e62825a7a027dc1ae36c075d75d125b341b44c21cd555c34bc9cb638ec74b1c"
+    },
+    {
+      "file": "ball_image.py",
+      "bytes": 9627,
+      "sha256": "28535451ad971848232174e273e8dfa9a799486f584e4ba732ebe3e5970a8de1"
+    },
+    {
+      "file": "ball_image_roi.py",
+      "bytes": 2869,
+      "sha256": "b72aac755405f7699329f393b5b8e34fa005f2c3c91de9c75a454e38a4120e98"
+    },
+    {
+      "file": "ball_motion.py",
+      "bytes": 6975,
+      "sha256": "f6049b84cf3ee7ecb22af39b7dbf944112f5fdb854878e864ac7ad0cca7cc88d"
+    },
+    {
+      "file": "ball_validation.py",
+      "bytes": 14739,
+      "sha256": "7841674ac1c6c3e9b6a915a65247e076f46174b29fa9026ae606b52fbf0ed1af"
+    },
+    {
+      "file": "d455_rgb_2d.py",
+      "bytes": 5663,
+      "sha256": "c552788ffc7e22b828cdddc4b728da4f29e58aa963a4426c065063ee7ac94208"
+    },
+    {
+      "file": "d455_table_tennis_tracker.py",
+      "bytes": 158043,
+      "sha256": "f08b257ae124371ad73b2e0abe623261e7a0090cfda7b6af3c356a8cf939d179"
+    },
+    {
+      "file": "export_d455_recording.py",
+      "bytes": 4563,
+      "sha256": "5a831a9c35d75c5549565de9d48675d76c67997c42de69f961e4dec0cd99e131"
+    },
+    {
+      "file": "fast_rgbd.py",
+      "bytes": 5845,
+      "sha256": "14a4b172221ef18b26b7436b2f93d91a2a7dcf4212a0955226ce218d995668e6"
+    },
+    {
+      "file": "ffs_runtime.py",
+      "bytes": 4915,
+      "sha256": "3b6b354f17476ba2f4ebecf61930a629752d908adf613bda5983f1839b83b11c"
+    },
+    {
+      "file": "ir_review_template.html",
+      "bytes": 5176,
+      "sha256": "077ab4b2e476a1cec47094dd8754aa96d0a27715ff6af3ef16096cd6f410af93"
+    },
+    {
+      "file": "prepare_ir_review.py",
+      "bytes": 6204,
+      "sha256": "d517f60f4ac7b2508bd776196c6598c685f0206d1c800f1faadb6c57d958ed08"
+    },
+    {
+      "file": "realtime_source.py",
+      "bytes": 2809,
+      "sha256": "aaedefb63329ba16d133419076249bcb04dde76b00236a72060c5a7bfe6d781c"
+    },
+    {
+      "file": "record_d455_motion.py",
+      "bytes": 18465,
+      "sha256": "323f4060faad3c8a02deb331b997e9ff55a8178814542ce7663a67fdef90b641"
+    },
+    {
+      "file": "record_d455_motion.sh",
+      "bytes": 520,
+      "sha256": "2a10a08e9901e47c0542c9e9c88a0cb1df5f0c36716010774a0245a1242e0f43"
+    },
+    {
+      "file": "recording_health.py",
+      "bytes": 2071,
+      "sha256": "636a6c6cddf446b94d4a8a58aafd31ef5aedc02c8c8acc0128fc708ef8d6bb9e"
+    },
+    {
+      "file": "render_realtime_rgbd.py",
+      "bytes": 3391,
+      "sha256": "17869237575fcc6d8aead3bc8df7386bc8228dbddfc8c72c22577faf2cf07903"
+    },
+    {
+      "file": "replay_ball_validation.py",
+      "bytes": 7216,
+      "sha256": "1a63dacede7a57cd3838efa8613a9139e9644ad2c491b40a68f7936bd2510f70"
+    },
+    {
+      "file": "replay_fast_rgbd.py",
+      "bytes": 6012,
+      "sha256": "d18433195d9280d1c28cd06ef05d46c1fb11e89dbccc5cc1026e665232db717d"
+    },
+    {
+      "file": "replay_realtime_3d.py",
+      "bytes": 8143,
+      "sha256": "0caa2a03c956e3a0b61dd95c2b6358de30e5e72be8329045409a2eefc339f5b5"
+    },
+    {
+      "file": "replay_table_pose.py",
+      "bytes": 3209,
+      "sha256": "c57f65be93bec4297c17126ea86f33c27cc1a518fcc0cc6f7f77c172944a40e4"
+    },
+    {
+      "file": "run_d455_2d.sh",
+      "bytes": 739,
+      "sha256": "d9baf37ff6e67fb19659504b92052442b2fa76b99d7f884c450b1482caafc202"
+    },
+    {
+      "file": "run_d455_tracker.sh",
+      "bytes": 3348,
+      "sha256": "1ef6d028721d8b52596746a5632eb5adcefce7e36c0fd121fb94e0623e664c22"
+    },
+    {
+      "file": "table_pose_geometry.py",
+      "bytes": 29368,
+      "sha256": "8babf2c31d7b44bc21edfcdb42767ef8cff53c0cc8d8fc80217cd9e9444be22e"
+    },
+    {
+      "file": "test_ball_image.py",
+      "bytes": 2235,
+      "sha256": "dd6c87a52bf1fc8a9e5a314b76aa1d0bacd69be3a83515325105e9d9359ca41c"
+    },
+    {
+      "file": "test_ball_validation.py",
+      "bytes": 11203,
+      "sha256": "3adbc9a89efc51c8a3a32a7aa298a5eb7c49c5183026849012db44bb253c9c33"
+    },
+    {
+      "file": "test_d455_realtime.sh",
+      "bytes": 1900,
+      "sha256": "0c6c8e49a28105f0e67857464b160b1ea521cc7ff36c9867702b2178d049a0cd"
+    },
+    {
+      "file": "test_dynamic_tracking.py",
+      "bytes": 4701,
+      "sha256": "f4944f61d860bcb112f1c025e9cf92bff6e651e38d59dfbc553c3d4a003f1fb4"
+    },
+    {
+      "file": "test_guided_depth.py",
+      "bytes": 3224,
+      "sha256": "d4b6a6b699b8002539db21d02fbdd5f77ce2a4581d4bc328141ed93da71ce953"
+    },
+    {
+      "file": "test_realtime_rgbd.py",
+      "bytes": 9313,
+      "sha256": "aaa929019e3e28204b2c463610db02b132b9532c18664fe8f5e08312ed3e86ec"
+    },
+    {
+      "file": "test_recording_health.py",
+      "bytes": 5957,
+      "sha256": "9ad10d0ddcffb5d1b6ac44d22e8f52ec119d96cbc6190fadd848404c78286a7b"
+    },
+    {
+      "file": "test_rgb3d_fusion.py",
+      "bytes": 4997,
+      "sha256": "2b653af844fbe028ded633862296c3ed9f5405e65364818273c20439b52887b8"
+    },
+    {
+      "file": "test_table_pose_geometry.py",
+      "bytes": 7847,
+      "sha256": "d0f58e61a1960b15cd2b0223a3126d3e2689810e79345fed90a6c85bcd33062b"
+    }
+  ]
+}

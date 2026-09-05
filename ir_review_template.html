@@ -1,0 +1,43 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8">
+<title>D455 左右红外球心复核</title>
+<style>body{font:16px system-ui;background:#101820;color:#e8eef2;margin:24px;max-width:1200px}button,select,input{font:inherit;padding:7px;margin:4px}canvas{max-width:100%;border:1px solid #60717c;cursor:crosshair;image-rendering:pixelated}p{line-height:1.6}.views{display:flex;gap:18px;flex-wrap:wrap}.pane{max-width:100%}#rgb{max-width:100%}small{color:#b9c9d4}</style>
+<h1>左右红外球心复核</h1>
+<p>先分别判断两幅红外图是否能看见球，再点击球心。看不清请选择“不确定”；裁剪中没有球请选择“裁剪内未见”，不能据此断言整幅图无球。绿色 RGB 十字仅是另一时刻的参考位置。不会显示算法球心，所有红外标签初始为未复核。</p>
+<button id="prev">上一组</button><span id="index"></span><button id="next">下一组</button>
+<button id="save">导出标签 JSON</button><label>恢复标签<input id="load" type="file" accept=".json"></label>
+<p><label><input id="contrast" type="checkbox" checked>显示对比度拉伸图（仅辅助观察，原始 PNG 保持不变）</label></p>
+<p id="info"></p><img id="rgb" alt="RGB 参考图">
+<div class="views"><div class="pane"><h2>左红外</h2><select id="leftstatus"></select><button data-clear="left">清除球心</button><p id="leftcoord"></p><canvas id="left"></canvas></div>
+<div class="pane"><h2>右红外</h2><select id="rightstatus"></select><button data-clear="right">清除球心</button><p id="rightcoord"></p><canvas id="right"></canvas></div></div>
+<p>备注 <input id="note" size="70" placeholder="例如：拖影、手部遮挡、球与背景重叠"></p>
+<small>这是开发样本复核，未形成独立测试集。导出后将文件保存到 F:\codex\d455_deployment。页面关闭前请导出；页面不自动写入本地文件。</small>
+<script>
+const samples=__SAMPLES__;let index=0, generation=0;
+const $=id=>document.getElementById(id);
+const states={unreviewed:'未复核',visible:'清晰可见',partial_visible:'部分可见 / 拖影',not_visible_in_crop:'裁剪内未见',uncertain:'不确定'};
+for(const side of ['left','right']){
+ for(const [value,label] of Object.entries(states)){$(side+'status').add(new Option(label,value));}
+ $(side+'status').onchange=()=>{const s=samples[index][side];s.status=$(side+'status').value;if(!['visible','partial_visible'].includes(s.status))s.uv=null;draw();};
+ $(side).onclick=e=>{const s=samples[index],r=e.target.getBoundingClientRect();
+  s[side].uv=[s.origin[0]+(e.clientX-r.left)*e.target.width/r.width,s.origin[1]+(e.clientY-r.top)*e.target.height/r.height].map(x=>Math.round(x*10)/10);
+  if(!['visible','partial_visible'].includes(s[side].status))s[side].status='visible';draw();};
+}
+document.querySelectorAll('[data-clear]').forEach(b=>b.onclick=()=>{samples[index][b.dataset.clear]={status:'unreviewed',uv:null};draw();});
+function draw(){const s=samples[index],ticket=++generation;
+ $('index').textContent=` ${index+1} / ${samples.length} `;$('prev').disabled=index===0;$('next').disabled=index===samples.length-1;
+ $('info').textContent=`${s.id} | ${s.time_s.toFixed(3)} 秒 | IR ${s.ir_frame} | IR−RGB ${((s.ir_t-s.rgb_t)*1000).toFixed(2)} ms | 坐标为原始红外图坐标`;
+ $('rgb').src=s.media.rgb;$('note').value=s.review_note;
+ for(const side of ['left','right']){const c=$(side),im=new Image();$(side+'status').value=s[side].status;
+  $(side+'coord').textContent=s[side].uv?`球心 (${s[side].uv.join(', ')})`:'尚无球心';
+  im.onload=()=>{if(ticket!==generation)return;c.width=im.width;c.height=im.height;const ctx=c.getContext('2d');ctx.drawImage(im,0,0);
+   if(s[side].uv){const [x,y]=s[side].uv.map((v,i)=>v-s.origin[i]);ctx.strokeStyle='#00ff84';ctx.beginPath();ctx.arc(x,y,6,0,2*Math.PI);ctx.stroke();}};
+  im.src=s.media[side+($('contrast').checked?'_contrast':'')];}}
+ $('prev').onclick=()=>{index=Math.max(0,index-1);draw();};$('next').onclick=()=>{index=Math.min(samples.length-1,index+1);draw();};$('contrast').onchange=draw;
+ $('note').oninput=()=>samples[index].review_note=$('note').value;
+ $('save').onclick=()=>{const output=samples.map(({media,...rest})=>rest),url=URL.createObjectURL(new Blob([JSON.stringify(output,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='ir_review_labels.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
+ $('load').onchange=async e=>{try{const parsed=JSON.parse(await e.target.files[0].text());if(!Array.isArray(parsed))throw Error('标签必须为数组');
+  const restored=[];for(const s of samples){const x=parsed.find(v=>v.id===s.id&&v.ir_frame===s.ir_frame);if(!x)continue;
+   for(const side of ['left','right']){const a=x[side];if(!a||!Object.hasOwn(states,a.status))throw Error('无效状态');if(a.uv!==null&&(!Array.isArray(a.uv)||a.uv.length!==2||!a.uv.every(Number.isFinite)))throw Error('无效坐标');}
+   restored.push([s,x]);}for(const [s,x] of restored){s.left=x.left;s.right=x.right;s.review_note=String(x.review_note||'');}draw();
+ }catch(err){alert('标签恢复失败：'+err.message);}};draw();
+</script></html>

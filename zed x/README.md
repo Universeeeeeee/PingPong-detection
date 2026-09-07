@@ -3,24 +3,33 @@
 本目录包含 ZED Mini 的同步双目橙色乒乓球检测、规则球桌位姿识别、SVO/SVO2 原生录制和 MP4 预览录制。
 球的三维位置始终在左相机坐标系；只有 `table.valid=true` 时，球测量中的 `position_table_m` 才有效。
 
-以下命令假设已克隆本仓库，并已准备好本项目的 ZED Python 虚拟环境（其中应能导入 `pyzed.sl` 和 `cv2`）。
-不要把系统 Python 与项目环境混用。
+以下命令假设已克隆本仓库，并已准备好能导入 `pyzed.sl` 和 `cv2` 的 ZED Python 虚拟环境。
+Git 不会克隆 `.venv`；下面显式使用 PC 上已有的 ZED 环境，不要把它误写成仓库内的 `./.venv`。
 
 ## 0. 进入目录并更新
 
 ```bash
 cd ~/zed_mini/zed_mini/PingPong-detection/"zed x"
 git pull origin main
-./.venv/bin/python --version
+
+export ZED_PYTHON="$HOME/zed_mini/zed x/.venv/bin/python"
+"$ZED_PYTHON" --version
 ```
 
-如果克隆目录不同，只需把第一行改为实际的 `PingPong-detection/zed x` 路径。
+变量名中间是下划线：使用 `"$ZED_PYTHON"`，不要写成 `"$ZED PYTHON"`。如果已有虚拟环境的位置不同，
+用下面命令查找，然后把 `ZED_PYTHON` 改成实际路径：
+
+```bash
+find "$HOME/zed_mini" -type f -path '*/.venv/bin/python' -print
+```
+
+如果克隆目录不同，还需把第一行改为实际的 `PingPong-detection/zed x` 路径。
 
 ## 1. 设备与环境检查
 
 ```bash
 bash linux_readonly_preflight.sh
-./.venv/bin/python zed_probe.py --list-devices
+"$ZED_PYTHON" zed_probe.py --list-devices
 ```
 
 从第二条命令输出中记录实际 `serial_number`，再设置一次变量：
@@ -34,7 +43,7 @@ ZED_SERIAL=13376675  # 替换为实际 serial_number
 不检测球、不算 SDK depth，只检查左右图、时间戳、帧率和掉帧：
 
 ```bash
-./.venv/bin/python zed_probe.py \
+"$ZED_PYTHON" zed_probe.py \
   --serial "$ZED_SERIAL" \
   --resolution VGA \
   --fps 100 \
@@ -49,7 +58,7 @@ ZED_SERIAL=13376675  # 替换为实际 serial_number
 会显示左右目并排图、球候选和三维 `XYZ`。按 `q` 或 `Esc` 结束：
 
 ```bash
-./.venv/bin/python zed_mini_tracker.py \
+"$ZED_PYTHON" zed_mini_tracker.py \
   --serial "$ZED_SERIAL" \
   --resolution VGA \
   --fps 100 \
@@ -63,7 +72,7 @@ ZED_SERIAL=13376675  # 替换为实际 serial_number
 `HD720@60`，因为球桌识别需要 SDK depth：
 
 ```bash
-./.venv/bin/python zed_mini_tracker.py \
+"$ZED_PYTHON" zed_mini_tracker.py \
   --serial "$ZED_SERIAL" \
   --resolution HD720 \
   --fps 60 \
@@ -78,7 +87,7 @@ ZED_SERIAL=13376675  # 替换为实际 serial_number
 当前有效球桌位姿（需先传入 `--table-pose-file`）。例如：
 
 ```bash
-./.venv/bin/python zed_mini_tracker.py \
+"$ZED_PYTHON" zed_mini_tracker.py \
   --serial "$ZED_SERIAL" \
   --resolution HD720 --fps 60 \
   --table-pose --table-hz 8 \
@@ -97,7 +106,7 @@ ZED_SERIAL=13376675  # 替换为实际 serial_number
 若桌面颜色未被识别，只调整 HSV 阈值，不要先放宽物理尺寸检查：
 
 ```bash
-./.venv/bin/python zed_mini_tracker.py \
+"$ZED_PYTHON" zed_mini_tracker.py \
   --serial "$ZED_SERIAL" \
   --resolution HD720 --fps 60 \
   --table-pose --table-hz 8 \
@@ -113,7 +122,7 @@ ZED_SERIAL=13376675  # 替换为实际 serial_number
 不打开窗口，使用 `Ctrl-C` 停止：
 
 ```bash
-./.venv/bin/python zed_mini_tracker.py \
+"$ZED_PYTHON" zed_mini_tracker.py \
   --serial "$ZED_SERIAL" \
   --resolution HD720 --fps 60 \
   --table-pose --table-hz 8 \
@@ -133,7 +142,7 @@ SVO/SVO2 是后续算法回放的主文件，保留同步左右图和 SDK 时间
 SESSION="zed_$(date +%Y%m%d_%H%M%S)"
 mkdir -p recordings
 
-./.venv/bin/python zed_mini_tracker.py \
+"$ZED_PYTHON" zed_mini_tracker.py \
   --serial "$ZED_SERIAL" \
   --resolution HD720 --fps 60 \
   --table-pose --table-hz 8 \
@@ -151,7 +160,7 @@ MP4 使用与实时窗口一致的标注预览（球候选、已确认三维轨�
 此命令验证录制文件能打开并检查其时间戳；它不运行球检测：
 
 ```bash
-./.venv/bin/python zed_probe.py \
+"$ZED_PYTHON" zed_probe.py \
   --input svo \
   --svo /absolute/path/to/recording.svo2 \
   --frames 300
@@ -160,7 +169,7 @@ MP4 使用与实时窗口一致的标注预览（球候选、已确认三维轨�
 ## 8. 离线测试
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 ./.venv/bin/python -m unittest discover -s tests -v
+PYTHONDONTWRITEBYTECODE=1 "$ZED_PYTHON" -m unittest discover -s tests -v
 ```
 
 不连接相机也可运行。其中 ZED table pose 的合成图像测试需要 OpenCV；若当前环境没有 OpenCV，相关用例会显示

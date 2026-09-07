@@ -317,6 +317,7 @@ DetectionFrame:
     image_bgr: np.ndarray
     sdk_image_timestamp_ns: int
     frame_number: int
+    capture_session_id: str
     intrinsics: CameraIntrinsics
     camera_frame_id: str
 
@@ -325,13 +326,16 @@ StereoFrame:
     right_gray: np.ndarray
     sdk_image_timestamp_ns: int
     frame_number: int
+    capture_session_id: str
     calibration: StereoCalibration
 
 DepthFrame:
     depth_m: np.ndarray
+    valid_mask: np.ndarray
     confidence: Optional[np.ndarray]
     sdk_image_timestamp_ns: int
     frame_number: int
+    capture_session_id: str
     intrinsics: CameraIntrinsics
     aligned_to_frame_id: str
 ```
@@ -347,6 +351,7 @@ MEASURE.DEPTH + MEASURE.CONFIDENCE → DepthFrame（可选、允许低于图像�
 约束：
 
 - ZED 左右图必须来自同一次 `read()` 或 `grab()` 对应的同步 stereo pair；不得把不同 frame number 拼成 `StereoFrame`。
+- `frame_number` 是 source 每次成功采集后递增的进程内序号，必须与随机生成的 `capture_session_id` 联合使用；重启、重新打开设备或回放跳转后不得只靠帧号去重。
 - `VIEW.LEFT_GRAY/RIGHT_GRAY` 可直接用于 stereo matching，无需先取 BGRA 再经过 BGR 转灰度。
 - 标准 `VIEW.LEFT/RIGHT` 是 8-bit BGRA；只有完成显式转换后的数组才能命名为 `image_bgr`。
 - 深度单位在 source 中统一为米，无效深度使用显式 mask，不用零值冒充有效距离。
@@ -428,7 +433,12 @@ BallMeasurement3D:
 ```text
 zed_x/
 ├── ZED_X_MIGRATION_TECHNICAL_PLAN.md
+├── QUICKSTART_ZED_MINI_LINUX.md
+├── linux_readonly_preflight.sh
 ├── zed_capture.py
+├── zed_sdk_adapter.py
+├── zed_source.py
+├── zed_probe.py
 ├── zed_record.py
 ├── zed_replay.py
 ├── camera_types.py
@@ -741,6 +751,33 @@ recordings/<session>/
 - 延迟分位数统计。
 - 误检、重复帧、倒序时间戳和预测占比统计。
 - D455 与 ZED X 结果分别报告，不共用同一成绩标签。
+
+### 13.1 当前离线实现状态（2026-09-06）
+
+已在本目录落地第一批不依赖相机、OpenCV 或 ZED SDK 的实现：
+
+- `camera_types.py`：公共 typed frame、标定结构和 `BallMeasurement3D`，包含单位、形状、frame ID、calibration ID 与 covariance 约束。
+- `projection.py`：无畸变 pinhole 投影/反投影、`T_dst_from_src` 刚体变换、DLT 双目三角化和像素误差一阶传播。
+- `zed_capture.py`：`pyzed.sl` 延迟导入、BGRA→BGR、同一帧号/SDK 图像时间戳的数据归一化、米制深度有效 mask，以及 observation/correlation key。
+- `zed_frontend.py`：以已匹配左右球心为输入的 mock stereo frontend，输出正式 `BallMeasurement3D`。
+- `tests/test_camera_foundation.py`：覆盖 rectified/raw 标定误配、BGRA 通道约束、深度有效 mask、投影闭环、变换方向、三角化以及同帧证据相关性。
+
+第二批接入准备也已落地：
+
+- `zed_sdk_adapter.py`：把 `Camera.open()` 后的 active rectified calibration 转换为公共标定，并生成可追踪的 calibration ID。
+- `zed_source.py`：统一 live、SVO2 和 ZED SDK stream 输入，默认不计算 depth；每次打开生成独立 capture session ID。
+- `zed_probe.py`：设备枚举与有限帧 JSON 诊断，记录配置、时间戳步长、实际 FPS 和 SDK dropped frame count。
+- `linux_readonly_preflight.sh`：不使用 sudo/apt 的 Linux、NVIDIA、CUDA、ZED SDK、Python 和 USB 只读盘点。
+- `QUICKSTART_ZED_MINI_LINUX.md`：ZED Mini 接线后的命令顺序、预期结果和停止条件。
+
+当前测试命令：
+
+```bash
+cd "/path/to/d455_handoff/zed x"
+python3 -m unittest discover -s tests -v
+```
+
+这只证明 SDK 无关的数据契约、合成几何闭环和 mock SDK 接入成立，不代表 ZED Mini/ZED X 的实际标定、帧率、时间戳、图像质量、USB/网络链路或乒乓球识别效果已经验收。连接 ZED Mini 后应严格按快速清单从只读诊断开始实机验证。
 
 ## 14. 实体到货后的实施顺序
 

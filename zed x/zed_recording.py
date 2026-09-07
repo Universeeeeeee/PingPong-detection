@@ -50,7 +50,13 @@ class Mp4PreviewRecorder:
             raise ValueError("MP4 preview inputs must be uint8 BGR images")
         if right.shape[:2] != left.shape[:2]:
             right = cv2.resize(right, (left.shape[1], left.shape[0]), interpolation=cv2.INTER_NEAREST)
-        canvas = np.hstack((left, right))
+        self.write_canvas(np.hstack((left, right)))
+
+    def write_canvas(self, canvas_bgr: np.ndarray) -> None:
+        """Write one already-composed uint8 BGR preview frame."""
+        canvas = np.asarray(canvas_bgr)
+        if canvas.ndim != 3 or canvas.shape[2] != 3 or canvas.dtype != np.uint8:
+            raise ValueError("MP4 canvas must be a uint8 BGR image")
         if self._writer is None:
             self._open(canvas)
         self._writer.write(canvas)

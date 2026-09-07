@@ -7,6 +7,7 @@ and the known physical table dimensions decide whether the proposal is valid.
 
 from dataclasses import dataclass
 import math
+from pathlib import Path
 from typing import Iterable, Optional, Sequence, Tuple
 
 import cv2
@@ -215,6 +216,10 @@ class ZedTablePoseTracker:
             if self._snapshot is None or timestamp_s - self._snapshot.timestamp_s > self.hold_seconds:
                 self._state = "LOST" if self._snapshot is not None else "SEARCHING"
                 self._new_epoch_on_next_valid = self._snapshot is not None
+            cv2.putText(
+                debug, "table {}: {}".format(self._state, self._reason), (10, 24),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 180, 255), 2,
+            )
             self._debug = debug
             return
         transform, confidence, metrics = candidate
@@ -243,10 +248,20 @@ class ZedTablePoseTracker:
             [-self.length / 2.0, self.width / 2.0, 0.0],
         ])
         projected = self.project(corners @ transform[:3, :3].T + transform[:3, 3])
+        colour = (0, 255, 0) if self._state == "VALID" else (0, 180, 255)
         if np.isfinite(projected).all():
-            cv2.polylines(debug, [np.rint(projected).astype(np.int32)], True, (0, 255, 0), 2)
+            projected_int = np.rint(projected).astype(np.int32)
+            cv2.polylines(debug, [projected_int], True, colour, 2)
+            for index, point in enumerate(projected_int):
+                cv2.circle(debug, tuple(point), 4, colour, -1)
+                cv2.putText(debug, str(index), tuple(point + (6, -6)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, colour, 1)
         cv2.putText(debug, "table {}: {}".format(self._state, self._reason), (10, 24),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, colour, 2)
+        cv2.putText(
+            debug, "%.3f x %.3f m | plane %.1f mm" % (
+                metrics["observed_length_m"], metrics["observed_width_m"], 1000.0 * metrics["plane_error_m"],
+            ), (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, colour, 1,
+        )
         self._debug = debug
 
     def snapshot(self, timestamp_s: float):
@@ -257,6 +272,30 @@ class ZedTablePoseTracker:
         metadata = {**self._snapshot.metadata, "valid": valid, "state": self._state,
                     "reason": self._reason, "stale_s": stale}
         return (self._snapshot if valid else None), metadata
+
+    def reset(self) -> None:
+        """Forget the current fixed-table solution and require fresh evidence."""
+        self._pending.clear()
+        self._snapshot = None
+        self._state = "SEARCHING"
+        self._reason = "manual_reinitialize"
+        self._new_epoch_on_next_valid = False
+
+    def save_pose(self, path: str) -> Path:
+        """Persist the last valid metric table pose for external inspection."""
+        if self._snapshot is None or self._state != "VALID":
+            raise RuntimeError("cannot save a table pose before it is valid")
+        output = Path(path).expanduser()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(
+            output,
+            T_camera_table=self._snapshot.T_camera_table,
+            table_length=self.length,
+            table_width=self.width,
+            table_frame_id=self._epoch,
+            timestamp_s=self._snapshot.timestamp_s,
+        )
+        return output
 
     def get_debug_image(self):
         return None if self._debug is None else self._debug.copy()

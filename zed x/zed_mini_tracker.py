@@ -2,8 +2,9 @@
 """ZED Mini orange-ball stereo tracker with continuous optional preview."""
 
 import argparse
-from collections import Counter
+from collections import Counter, deque
 import json
+from pathlib import Path
 import statistics
 import sys
 import time
@@ -60,8 +61,16 @@ def parse_args():
     parser.add_argument("--table-min-area", type=int, default=15000)
     parser.add_argument("--table-confirm-frames", type=int, default=5)
     parser.add_argument(
+        "--table-pose-file",
+        help="write the current validated table pose here when s is pressed in the preview window",
+    )
+    parser.add_argument(
         "--table-hz", type=float, default=8.0,
         help="maximum table-pose update rate; ball processing still runs every frame",
+    )
+    parser.add_argument(
+        "--debug-dir",
+        help="write final annotated ball preview and table-pose debug images when the run stops",
     )
     return parser.parse_args()
 
@@ -100,15 +109,21 @@ def table_measurement_fields(measurement, snapshot, metadata):
     }
 
 
-def _draw_preview(frames, result, frames_read: int, started: float):
-    """Build a side-by-side BGR preview without changing the measurement path."""
+def _draw_preview(
+    frames, result, frames_read: int, started: float, trajectory_uv=(),
+    table_metadata=None, table_position=None,
+):
+    """Build a side-by-side debug preview without changing the measurement path."""
     left = frames.detection.image_bgr.copy()
     right = frames.right_detection.image_bgr.copy()
     candidate = result.left_result
     if candidate.get("valid") and candidate.get("bbox") is not None:
         x, y, width, height = map(int, candidate["bbox"])
-        cv2.rectangle(left, (x, y), (x + width, y + height), (0, 220, 0), 2)
-        cv2.circle(left, tuple(map(int, candidate["uv"])), 4, (0, 255, 0), -1)
+        colour = (0, 255, 0) if result.measurement is not None else (255, 255, 0)
+        cv2.rectangle(left, (x, y), (x + width, y + height), colour, 2)
+        cv2.circle(left, tuple(map(int, candidate["uv"])), 4, colour, -1)
+    if len(trajectory_uv) >= 2:
+        cv2.polylines(left, [np.rint(np.asarray(trajectory_uv)).astype(np.int32)], False, (0, 255, 0), 2)
     right_candidates = result.right_result.get("candidates", [])
     for index, item in enumerate(right_candidates):
         if item.get("bbox") is None:
@@ -130,6 +145,16 @@ def _draw_preview(frames, result, frames_read: int, started: float):
         xyz = result.measurement.position_camera_m
         text = "XYZ %.2f %.2f %.2f m" % tuple(float(value) for value in xyz)
         cv2.putText(left, text, (10, 76), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
+    if table_metadata is not None:
+        table_state = table_metadata.get("state", "DISABLED")
+        table_colour = (0, 255, 0) if table_metadata.get("valid") else (0, 180, 255)
+        table_text = "table {} #{}".format(table_state, table_metadata.get("table_frame_id", 0))
+        cv2.putText(left, table_text, (10, 102), cv2.FONT_HERSHEY_SIMPLEX, 0.55, table_colour, 2)
+        if table_position is not None:
+            cv2.putText(
+                left, "table xyz %.2f %.2f %.2f m" % tuple(table_position), (10, 128),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.50, (0, 255, 0), 2,
+            )
     if right.shape[:2] != left.shape[:2]:
         right = cv2.resize(right, (left.shape[1], left.shape[0]), interpolation=cv2.INTER_NEAREST)
     canvas = np.hstack((left, right))
@@ -143,7 +168,22 @@ def _draw_preview(frames, result, frames_read: int, started: float):
         (255, 255, 255),
         2,
     )
+    cv2.putText(
+        canvas, "cyan=2D candidate green=3D measured | r clear trail t re-table s save pose",
+        (10, canvas.shape[0] - 34), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1,
+    )
     return canvas
+
+
+def save_debug_images(directory: str, ball_preview, table_tracker) -> None:
+    output = Path(directory).expanduser()
+    output.mkdir(parents=True, exist_ok=True)
+    if ball_preview is not None and not cv2.imwrite(str(output / "ball_preview.jpg"), ball_preview):
+        raise OSError("could not write {}".format(output / "ball_preview.jpg"))
+    if table_tracker is not None:
+        table_debug = table_tracker.get_debug_image()
+        if table_debug is not None and not cv2.imwrite(str(output / "table_pose.jpg"), table_debug):
+            raise OSError("could not write {}".format(output / "table_pose.jpg"))
 
 
 def main() -> int:
@@ -185,6 +225,8 @@ def main() -> int:
     table_metadata = {"valid": False, "state": "DISABLED", "table_frame_id": 0}
     table_snapshot = None
     last_table_update_s = None
+    measured_trajectory = deque(maxlen=48)
+    last_preview = None
     try:
         with ZedMiniSource(config) as source:
             source_metadata = dict(source.metadata)
@@ -235,22 +277,27 @@ def main() -> int:
                 reasons[result.diagnostics["reason"]] += 1
                 if result.measurement is not None:
                     measurements += 1
+                    measured_trajectory.append(result.left_result["uv"])
                     last_measurement = measurement_dict(result.measurement)
                     last_measurement.update(
                         table_measurement_fields(result.measurement, table_snapshot, table_metadata)
                     )
                     if args.print_measurements:
                         print(json.dumps(last_measurement, ensure_ascii=False), flush=True)
-                if mp4_recorder is not None:
-                    mp4_recorder.write(
-                        read_result.frames.detection.image_bgr,
-                        read_result.frames.right_detection.image_bgr,
+                if display_enabled or mp4_recorder is not None or args.debug_dir:
+                    table_position = (
+                        table_measurement_fields(result.measurement, table_snapshot, table_metadata)["position_table_m"]
+                        if result.measurement is not None else None
                     )
+                    last_preview = _draw_preview(
+                        read_result.frames, result, frames_read, started, measured_trajectory,
+                        table_metadata, table_position,
+                    )
+                if mp4_recorder is not None:
+                    mp4_recorder.write_canvas(last_preview)
                 if display_enabled:
                     try:
-                        cv2.imshow("ZED Mini ball detection", _draw_preview(
-                            read_result.frames, result, frames_read, started
-                        ))
+                        cv2.imshow("ZED Mini ball detection", last_preview)
                         if table_tracker is not None:
                             table_debug = table_tracker.get_debug_image()
                             if table_debug is not None:
@@ -263,9 +310,29 @@ def main() -> int:
                     if key in (ord("q"), 27):
                         stopped_by_key = True
                         break
+                    if key == ord("r"):
+                        measured_trajectory.clear()
+                        print("[INFO] Cleared ZED measured-ball trajectory")
+                    elif key == ord("t") and table_tracker is not None:
+                        table_tracker.reset()
+                        table_snapshot = None
+                        table_metadata = {"valid": False, "state": "SEARCHING", "table_frame_id": 0}
+                        print("[INFO] ZED table reinitialization requested")
+                    elif key == ord("s") and table_tracker is not None:
+                        if not args.table_pose_file:
+                            print("[WARN] Set --table-pose-file before saving a table pose")
+                        else:
+                            try:
+                                print("[INFO] Saved ZED table pose: {}".format(
+                                    table_tracker.save_pose(args.table_pose_file)
+                                ))
+                            except RuntimeError as error:
+                                print("[WARN] {}".format(error))
             ended = time.monotonic()
             if display_enabled:
                 cv2.destroyAllWindows()
+        if args.debug_dir:
+            save_debug_images(args.debug_dir, last_preview, table_tracker)
         elapsed = ended - started
         timestamp_steps_ms = [
             (newer - older) / 1e6

@@ -73,6 +73,21 @@ ZED_SERIAL=13376675  # 替换为实际 serial_number
   --print-measurements
 ```
 
+球检测窗口中，青色表示二维候选、绿色表示已通过双目验证的三维测量及其短历史轨迹；球桌窗口中绿色为有效、
+橙色为等待确认。窗口快捷键：`q`/`Esc` 退出，`r` 清空显示用的三维轨迹，`t` 强制重新初始化球桌，`s` 保存
+当前有效球桌位姿（需先传入 `--table-pose-file`）。例如：
+
+```bash
+./.venv/bin/python zed_mini_tracker.py \
+  --serial "$ZED_SERIAL" \
+  --resolution HD720 --fps 60 \
+  --table-pose --table-hz 8 \
+  --table-pose-file recordings/table_pose.npz \
+  --debug-dir recordings/last_debug
+```
+
+程序正常结束时，`--debug-dir` 会写出最后一帧的 `ball_preview.jpg` 和 `table_pose.jpg`。
+
 终端测量 JSON 中：
 
 - `position_camera_m`：左相机坐标系位置；
@@ -125,6 +140,9 @@ mkdir -p recordings
   --record-svo "recordings/${SESSION}.svo2" \
   --record-mp4 "recordings/${SESSION}_preview.mp4"
 ```
+
+MP4 使用与实时窗口一致的标注预览（球候选、已确认三维轨迹、球桌状态），而不是可用于算法回放的原始数据；
+后续算法回放仍应使用 SVO/SVO2。
 
 若只需高速双目球录像而非球桌深度，可改用 `VGA@100` 并删除 `--table-pose --table-hz 8`。
 
